@@ -20,6 +20,9 @@ const START_URLS = [
     'https://singapore-directory.com/healthcare/specialized-doctors',
 ];
 
+// Noise words to filter out (UI elements, not real listings)
+const NOISE = ['show filters', 'login', 'register', 'list your business', 'see all', 'search', 'browse', 'select a category'];
+
 let totalItems = 0;
 
 const crawler = new CheerioCrawler({
@@ -28,132 +31,120 @@ const crawler = new CheerioCrawler({
     async requestHandler({ $, request, enqueueLinks }) {
         if (totalItems >= maxItems) return;
 
-        log.info(`Processing: ${request.url}`);
-        const results = [];
+        const isDetailPage = request.userData.type === 'detail';
 
-        // singapore-directory.com lists businesses as cards/items with:
-        // - h4 or h3 with link to detail page
-        // - address text below the title
-        // Each listing card has a link with the business name and address visible
+        if (isDetailPage) {
+            // DETAIL PAGE: extract full contact info
+            log.info(`Detail: ${request.url}`);
 
-        // Try finding listing items (the site uses standard listing structure)
-        $('a[href*="/singapore-directory.com/"]').each((i, el) => {
-            // Skip navigation/category links
-            const href = $(el).attr('href') || '';
-            if (!href.match(/\/\d+$/)) return; // Listing URLs end with /ID number
-        });
-
-        // Look for listing blocks — they contain title + address
-        const listingSelectors = [
-            '.listing-item, .item, .card, article',
-            'div[class*="listing"], div[class*="item"]',
-            'h4 a, h3 a',
-        ];
-
-        // Strategy 1: Find cards/articles that have both a link and address text
-        $('article, .item, .listing-item, .card, div[class*="list"]').each((i, el) => {
-            if (totalItems + results.length >= maxItems) return false;
-            const block = $(el);
-
-            // Name from heading link
-            let name = block.find('h3 a, h4 a, h2 a, .title a').first().text().trim();
-            if (!name) name = block.find('a').first().text().trim();
+            const name = $('h1, h2').first().text().trim() || request.userData.name || '';
             if (!name || name.length < 3) return;
 
-            // Link to detail page
-            const detailLink = block.find('a[href*="/"]').first().attr('href') || '';
-
-            // Address — look for text that contains Singapore postal code pattern or "Singapore"
-            let address = '';
-            const blockText = block.text();
-            const addrMatch = blockText.match(/(\d+[^,]*(?:Road|Street|Avenue|Drive|Lane|Way|Boulevard|Crescent|Place|Close|Walk|Terrace|Link|Gateway|Square)[^,]*,?\s*(?:Singapore)?\s*\d{6})/i);
-            if (addrMatch) {
-                address = addrMatch[1].trim();
-            } else {
-                // Look for "Singapore" followed by postal code
-                const sgMatch = blockText.match(/([^.]*Singapore\s*\d{6})/i);
-                if (sgMatch) address = sgMatch[1].trim();
+            // Phone
+            let phone = '';
+            $('a[href^="tel:"]').each((_, el) => {
+                phone = $(el).text().trim() || $(el).attr('href').replace('tel:', '');
+                return false;
+            });
+            if (!phone) {
+                const bodyText = $('body').text();
+                const phoneMatch = bodyText.match(/(?:\+65\s?)?[689]\d{3}\s?\d{4}/);
+                if (phoneMatch) phone = phoneMatch[0].trim();
             }
 
-            // Also try just getting any text after the name that looks like an address
-            if (!address) {
-                const allText = block.find('p, span, div').not('h1,h2,h3,h4,h5,a').text().trim();
-                if (allText && allText.includes('Singapore')) {
-                    address = allText.replace(/\s+/g, ' ').slice(0, 200);
-                }
-            }
-
-            // Category from breadcrumb or category link
-            let category = '';
-            block.find('a[href*="singapore-directory.com/"]').each((_, a) => {
-                const catText = $(a).text().trim();
-                if (catText && catText !== name && catText.length > 2 && catText.length < 50) {
-                    category = catText;
-                }
+            // Email
+            let email = '';
+            $('a[href^="mailto:"]').each((_, el) => {
+                email = $(el).text().trim() || $(el).attr('href').replace('mailto:', '');
+                return false;
             });
 
-            if (name && name.length > 2) {
-                results.push({
-                    name: name.replace(/\s+/g, ' ').trim(),
-                    address: address || 'Not Found',
-                    category: category || 'Healthcare',
-                    website: detailLink || 'Not Found',
-                    sourceUrl: request.url,
-                });
-            }
-        });
-
-        // Strategy 2: If no cards found, look for any links that point to detail pages (ending in /number)
-        if (results.length === 0) {
-            $('a').each((i, el) => {
-                if (totalItems + results.length >= maxItems) return false;
+            // Website (external link)
+            let website = '';
+            $('a[href^="http"]').each((_, el) => {
                 const href = $(el).attr('href') || '';
-                const text = $(el).text().trim();
-
-                // Detail pages end with /number (e.g. /business-name/2800)
-                if (href.match(/\/\d{3,5}$/) && text.length > 3 && text.length < 100) {
-                    // Get surrounding text for address
-                    const parent = $(el).parent();
-                    const parentText = parent.text().replace(text, '').trim();
-                    let address = '';
-                    const addrMatch = parentText.match(/([^.]*(?:\d{6}|Singapore)[^.]*)/i);
-                    if (addrMatch) address = addrMatch[1].trim().replace(/\s+/g, ' ');
-
-                    results.push({
-                        name: text.replace(/\s+/g, ' ').trim(),
-                        address: address || 'Not Found',
-                        category: 'Healthcare',
-                        website: href.startsWith('http') ? href : `https://singapore-directory.com${href}`,
-                        sourceUrl: request.url,
-                    });
+                if (!href.includes('singapore-directory.com') && !href.includes('facebook.com') && !href.includes('google.com') && !href.includes('twitter.com')) {
+                    website = href;
+                    return false;
                 }
             });
+
+            // Address
+            let address = '';
+            const bodyText = $('body').text();
+            const addrMatch = bodyText.match(/(\d+[^.]*?Singapore\s*\d{6})/i);
+            if (addrMatch) address = addrMatch[1].replace(/\s+/g, ' ').trim().slice(0, 200);
+
+            // Category
+            const category = request.userData.category || 'Healthcare';
+
+            await Actor.pushData([{
+                name,
+                phone: phone || 'Not Found',
+                email: email || 'Not Found',
+                address: address || request.userData.address || 'Not Found',
+                website: website || 'Not Found',
+                category,
+                sourceUrl: request.url,
+            }]);
+            totalItems++;
+            log.info(`✅ ${name} — phone: ${phone || 'N/A'}, addr: ${address.slice(0, 50)}...`);
+            return;
         }
 
-        // Dedupe by name
-        const seen = new Set();
-        const unique = results.filter(r => {
-            if (seen.has(r.name)) return false;
-            seen.add(r.name);
-            return true;
+        // LISTING PAGE: find business cards and enqueue detail pages
+        log.info(`Listing: ${request.url}`);
+        let enqueued = 0;
+
+        // Find all links that point to detail pages (URLs ending with /number)
+        $('a').each((i, el) => {
+            if (totalItems + enqueued >= maxItems) return false;
+
+            const href = $(el).attr('href') || '';
+            const text = $(el).text().trim().replace(/\s+/g, ' ');
+
+            // Detail pages match: /street-name/category/subcategory/business-name/ID
+            if (!href.match(/\/\d{3,5}$/)) return;
+            if (text.length < 4 || text.length > 120) return;
+
+            // Filter noise
+            if (NOISE.some(n => text.toLowerCase().includes(n))) return;
+
+            // Get address context from parent
+            const parent = $(el).closest('div, article, li, td');
+            const parentText = parent.text().replace(text, '').replace(/\s+/g, ' ').trim();
+            let address = '';
+            const sgMatch = parentText.match(/([^.]{5,}Singapore\s*\d{6})/i);
+            if (sgMatch) address = sgMatch[1].trim().slice(0, 200);
+            if (!address) {
+                const addrPart = parentText.match(/(\d+[^.]{5,}\d{6})/);
+                if (addrPart) address = addrPart[1].trim().slice(0, 200);
+            }
+
+            const fullUrl = href.startsWith('http') ? href : `https://singapore-directory.com${href}`;
+
+            crawler.addRequests([{
+                url: fullUrl,
+                userData: {
+                    type: 'detail',
+                    name: text,
+                    address,
+                    category: 'Healthcare',
+                },
+            }]);
+            enqueued++;
         });
 
-        if (unique.length > 0) {
-            await Actor.pushData(unique);
-            totalItems += unique.length;
-            log.info(`✅ Extracted ${unique.length} listings from ${request.url} (total: ${totalItems})`);
-        } else {
-            log.warning(`⚠️ No listings found on ${request.url}`);
-        }
+        log.info(`Enqueued ${enqueued} detail pages from ${request.url}`);
 
-        // Enqueue pagination and subcategory links
-        if (totalItems < maxItems) {
+        // Also enqueue subcategory/pagination links
+        if (totalItems + enqueued < maxItems) {
             await enqueueLinks({
                 globs: [
                     'https://singapore-directory.com/doctors/**',
                     'https://singapore-directory.com/healthcare/**',
                 ],
-                exclude: ['**/user/**', '**/login**', '**/register**', '**/item/new**'],
+                exclude: ['**/user/**', '**/login**', '**/register**', '**/item/new**', '**/contact**'],
             });
         }
     },
