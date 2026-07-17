@@ -1,0 +1,23 @@
+{
+    "actorSpecification": 1,
+    "fields": {
+        "type": "object",
+        "properties": {
+            "name": { "title": "Name", "type": "string", "description": "Dental clinic or dentist name" },
+            "phone": { "title": "Phone", "type": "string", "description": "Phone number" },
+            "address": { "title": "Address", "type": "string", "description": "Full address" },
+            "website": { "title": "Website", "type": "string", "description": "Website URL" },
+            "categories": { "title": "Categories", "type": "string", "description": "Category tags" },
+            "branches": { "title": "Branches", "type": "integer", "description": "Number of branches/outlets" },
+            "sourceUrl": { "title": "Source URL", "type": "string", "description": "URL where data was found" }
+        },
+        "additionalProperties": true
+    },
+    "views": {
+        "overview": {
+            "title": "Overview",
+            "transformation": { "fields": ["name", "phone", "address", "website", "categories", "branches"] },
+            "display": { "component": "table" }
+        }
+    }
+}
